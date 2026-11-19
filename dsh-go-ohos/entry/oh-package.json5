@@ -1,0 +1,9 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "DSH Go 主模块",
+  "main": "",
+  "author": "Aiden",
+  "license": "MIT",
+  "dependencies": {}
+}

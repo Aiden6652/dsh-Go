@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "DSH Go 鸿蒙壳体"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "承载 DeepSeek Harness 网页端"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "DSH Go"
+    }
+  ]
+}

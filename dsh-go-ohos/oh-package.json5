@@ -1,0 +1,13 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "dsh-go-ohos",
+  "version": "1.0.0",
+  "description": "DSH Go 的鸿蒙壳体：用 ArkTS Web 组件承载 DeepSeek Harness 网页端",
+  "main": "",
+  "author": "Aiden",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {
+    "@ohos/hypium": "1.0.19"
+  }
+}
