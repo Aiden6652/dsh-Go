@@ -396,6 +396,12 @@ final class IOSPhoneCoreDevice: NSObject {
         self.setState(["phase": "failed", "code": "ERR_PHONE_CONFIGURATION"]); return
       }
       do {
+        // A bundle dropped into Documents/DDI replaces the mirror download for
+        // this run. The download cannot reach the network while LocalDevVPN is
+        // up, so this is the only path that works on such a device. A failure
+        // here is silent: nativeConfiguration() then reports no cache and the
+        // pinned download is attempted exactly as before.
+        self.cache.importFromDocumentsIfPresent()
         let configuration: [String: Any] = [
           "runId": run.id, "host": "10.7.0.1", "port": servicePort,
           "allowDDIMount": allowDDIMount,
