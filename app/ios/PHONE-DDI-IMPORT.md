@@ -11,15 +11,15 @@
 iOS 的手机操控要先挂载 **DDI（Developer Disk Image）**。默认路径是从固定镜像下载，
 但开启 **LocalDevVPN** 之后，下载请求走不通；关了 VPN 又会被要求重新打开，形成死锁。
 
-现在可以绕开下载：**把 DDI 文件放进 App 的 `Documents/DSH-DDI/`，App 会自己导入。**
+现在可以绕开下载：**把 DDI 文件放进 App 的 `Documents/DDI/`，App 会自己导入。**
 
 ## 用法
 
-1. 用「文件」App 打开 **DSH Go** 文件夹，新建目录 `DSH-DDI`。
+1. 用「文件」App 打开 **DSH Go** 文件夹，新建目录 `DDI`。
 2. 把 DDI 文件放进去。两种放法都行：
 
    ```
-   Documents/DSH-DDI/
+   Documents/DDI/
    ├── BuildManifest.plist
    ├── Image.dmg
    └── Image.dmg.trustcache
@@ -28,7 +28,7 @@ iOS 的手机操控要先挂载 **DDI（Developer Disk Image）**。默认路径
    或者按变体分目录（和镜像仓库的结构一致）：
 
    ```
-   Documents/DSH-DDI/
+   Documents/DDI/
    ├── personalized/
    │   ├── BuildManifest.plist
    │   ├── Image.dmg
@@ -62,7 +62,7 @@ iOS 的手机操控要先挂载 **DDI（Developer Disk Image）**。默认路径
   放错变体等于没放，App 会继续尝试下载。
 - **文件要完整**：`Image.dmg` 缺了或者截断了，导入会失败并退回下载。
 - **不会自动清理**：导入之后 `imported` 一直是 true，直到进程重启。
-  想回到下载模式，删掉 `Documents/DSH-DDI/` 再重启 App。
+  想回到下载模式，删掉 `Documents/DDI/` 再重启 App。
 
 ---
 
@@ -74,16 +74,16 @@ iOS 휴대폰 제어는 먼저 **DDI(Developer Disk Image)** 를 마운트해야
 기본 경로는 고정 미러에서 내려받는 것인데, **LocalDevVPN** 을 켜면 다운로드가 막히고,
 끄면 다시 켜라고 요구해서 교착 상태가 됩니다.
 
-이제 다운로드를 우회할 수 있습니다: **DDI 파일을 앱의 `Documents/DSH-DDI/` 에 넣으면
+이제 다운로드를 우회할 수 있습니다: **DDI 파일을 앱의 `Documents/DDI/` 에 넣으면
 앱이 직접 가져옵니다.**
 
 ## 사용법
 
-1. 「파일」앱에서 **DSH Go** 폴더를 열고 `DSH-DDI` 디렉터리를 만듭니다.
+1. 「파일」앱에서 **DSH Go** 폴더를 열고 `DDI` 디렉터리를 만듭니다.
 2. DDI 파일을 그 안에 넣습니다. 두 가지 배치 모두 지원됩니다:
 
    ```
-   Documents/DSH-DDI/
+   Documents/DDI/
    ├── BuildManifest.plist
    ├── Image.dmg
    └── Image.dmg.trustcache
@@ -92,7 +92,7 @@ iOS 휴대폰 제어는 먼저 **DDI(Developer Disk Image)** 를 마운트해야
    또는 변형별 하위 폴더(미러 저장소 구조와 동일):
 
    ```
-   Documents/DSH-DDI/
+   Documents/DDI/
    ├── personalized/
    │   ├── BuildManifest.plist
    │   ├── Image.dmg
@@ -129,4 +129,4 @@ iOS 휴대폰 제어는 먼저 **DDI(Developer Disk Image)** 를 마운트해야
 - **파일이 온전해야 합니다**: `Image.dmg` 가 없거나 잘렸으면 가져오기가 실패하고
   다운로드로 돌아갑니다.
 - **자동 정리 없음**: 가져온 뒤에는 프로세스가 재시작될 때까지 `imported` 가 true 입니다.
-  다운로드 모드로 돌아가려면 `Documents/DSH-DDI/` 를 지우고 앱을 재시작하세요.
+  다운로드 모드로 돌아가려면 `Documents/DDI/` 를 지우고 앱을 재시작하세요.

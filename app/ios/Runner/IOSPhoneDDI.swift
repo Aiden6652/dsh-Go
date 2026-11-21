@@ -115,13 +115,13 @@ final class IOSPhoneDDICache {
   /// it as a digest; the catalog id marks the cache as imported.
   static let importedPin = "imported"
 
-  /// Drop folder the user can reach from the Files app: `Documents/DSH-DDI`.
+  /// Drop folder the user can reach from the Files app: `Documents/DDI`.
   /// Putting the pinned file names here (flat, or in `personalized/` and
   /// `cryptex/` subfolders) is the import path that needs no file picker, which
   /// matters on devices where LocalDevVPN blocks the download.
-  static let importFolderName = "DSH-DDI"
+  static let importFolderName = "DDI"
 
-  /// Import from `Documents/DSH-DDI` when it exists and holds a usable bundle.
+  /// Import from `Documents/DDI` when it exists and holds a usable bundle.
   /// Returns nil when there is nothing to import, so callers can fall back to
   /// the pinned download unchanged.
   @discardableResult
@@ -192,7 +192,7 @@ final class IOSPhoneDDICache {
   func prepare(_ variant: Variant,
                progress: @escaping @MainActor (Int64, Int64) -> Void) async throws {
     guard !busy else { throw IOSPhoneDDIError.unavailable }
-    // A bundle the user dropped into Documents/DSH-DDI wins over the network:
+    // A bundle the user dropped into Documents/DDI wins over the network:
     // the download is unreachable while LocalDevVPN is on.
     if !imported, importFromDocumentsIfPresent() != nil {
       // Report the bundle as complete so a progress UI does not stay spinning;
