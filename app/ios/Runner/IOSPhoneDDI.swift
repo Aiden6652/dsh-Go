@@ -21,6 +21,9 @@ final class IOSPhoneDDICache {
     let sha256: String
   }
   static let catalogID = "ddi-e2aaeac89ca8fa56c2fa1f144d182994e07a525b-v1"
+  /// Reported for a user-imported DDI. It has no pins, so the native side must
+  /// not confuse it with the mirror catalog above.
+  static let importedCatalogID = "ddi-imported-v1"
   static let sourceCommit = "e2aaeac89ca8fa56c2fa1f144d182994e07a525b"
   static let shared = IOSPhoneDDICache()
   private let root: URL
@@ -30,6 +33,10 @@ final class IOSPhoneDDICache {
   private var busy = false
   private var progressID: UUID?
   private var progressCompleted: Int64 = 0
+  /// Set once the user imports their own DDI. Their files replace the cache and
+  /// every later `nativeConfiguration()` reports the imported catalog instead of
+  /// the pinned one, so the native side stops demanding the mirror's hashes.
+  private(set) var imported = false
 
   init(root: URL? = nil) {
     // Resolve only the trusted container prefix. Never resolve a cache-owned
@@ -80,26 +87,120 @@ final class IOSPhoneDDICache {
   }
 
   func status() -> [String: Any] {
-    ["catalogId": Self.catalogID, "downloading": busy,
+    ["catalogId": imported ? Self.importedCatalogID : Self.catalogID,
+     "downloading": busy, "imported": imported,
      "verifiedThisProcess": verified.map(\.rawValue).sorted()]
   }
 
   /// Internal FFI input. Rust independently opens anchored, no-follow FDs and
   /// verifies every byte; a previous Swift cache check grants no file authority.
   func nativeConfiguration() -> [String: Any] {
-    var result: [String: Any] = ["catalogId": Self.catalogID, "directory": root.path]
+    let catalog = imported ? Self.importedCatalogID : Self.catalogID
+    var result: [String: Any] = ["catalogId": catalog, "directory": root.path]
+    if imported { result["imported"] = true }
     for variant in Variant.allCases {
       let directory = root.appendingPathComponent(variant.rawValue, isDirectory: true)
       if Self.assets(variant).allSatisfy({ FileManager.default.fileExists(atPath: directory.appendingPathComponent($0.filename).path) }) {
-        result[variant.rawValue] = Dictionary(uniqueKeysWithValues: Self.assets(variant).map { ($0.key, $0.sha256) })
+        // An imported bundle reports placeholder pins: the keys still describe
+        // which files the native side must find, but the values carry no hash.
+        result[variant.rawValue] = Dictionary(uniqueKeysWithValues: Self.assets(variant).map {
+          ($0.key, imported ? Self.importedPin : $0.sha256)
+        })
       }
     }
     return result
   }
 
+  /// Placeholder value for an imported bundle. Native code must not interpret
+  /// it as a digest; the catalog id marks the cache as imported.
+  static let importedPin = "imported"
+
+  /// Drop folder the user can reach from the Files app: `Documents/DSH-DDI`.
+  /// Putting the pinned file names here (flat, or in `personalized/` and
+  /// `cryptex/` subfolders) is the import path that needs no file picker, which
+  /// matters on devices where LocalDevVPN blocks the download.
+  static let importFolderName = "DSH-DDI"
+
+  /// Import from `Documents/DSH-DDI` when it exists and holds a usable bundle.
+  /// Returns nil when there is nothing to import, so callers can fall back to
+  /// the pinned download unchanged.
+  @discardableResult
+  func importFromDocumentsIfPresent() -> [String: Any]? {
+    let documents = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+      .appendingPathComponent("Documents", isDirectory: true)
+      .appendingPathComponent(Self.importFolderName, isDirectory: true)
+    guard FileManager.default.fileExists(atPath: documents.path) else { return nil }
+    do {
+      return try importDirectory(documents)
+    } catch {
+      // A half-copied folder must not brick the download path; leave `imported`
+      // false and let the caller try the network.
+      return nil
+    }
+  }
+
+  /// Replace the cache with a DDI the user picked from Files.
+  ///
+  /// The chosen directory must contain the pinned file names for at least one
+  /// variant, and its `BuildManifest.plist` must parse. Bytes are copied through
+  /// anchored, no-follow descriptors; nothing is accepted from a symlink. No
+  /// SHA-256 pin is checked because the user's own build cannot match the
+  /// mirror's hashes. On success the cache reports the imported catalog id, so
+  /// native mounting reads the files structurally instead of against pins.
+  func importDirectory(_ source: URL,
+                       variants: [Variant] = Variant.allCases) throws -> [String: Any] {
+    guard !busy else { throw IOSPhoneDDIError.unavailable }
+    guard source.isFileURL else { throw IOSPhoneDDIError.cache }
+    let sourceRoot = try IOSPhoneDDIDirectory.openPath(anchor: source, components: [])
+    var importedVariants: [Variant] = []
+    for variant in variants {
+      let files = Self.assets(variant)
+      // The source may hold the files flat or in a per-variant subdirectory,
+      // matching how a mirror checkout stores them.
+      var candidates: [IOSPhoneDDIDirectory] = [sourceRoot]
+      if let child = try? sourceRoot.openChild(variant.rawValue) { candidates.append(child) }
+      guard let from = candidates.first(where: { $0.containsAll(files.map(\.filename)) }) else { continue }
+      let to = try IOSPhoneDDIDirectory.openPath(anchor: anchor, components: components + [variant.rawValue])
+      try from.copy(all: files.map(\.filename), into: to)
+      if try to.containsAll(files.map(\.filename)) { importedVariants.append(variant) }
+    }
+    guard !importedVariants.isEmpty else { throw IOSPhoneDDIError.integrity }
+    // Only one variant needs to parse for the import to be usable, but a manifest
+    // that does not parse at all means the wrong directory was chosen.
+    guard (try? verifyManifestParses(importedVariants)) != nil else { throw IOSPhoneDDIError.integrity }
+    imported = true
+    verified.formUnion(importedVariants)
+    return status()
+  }
+
+  private func verifyManifestParses(_ variants: [Variant]) throws {
+    for variant in variants {
+      let directory = try IOSPhoneDDIDirectory.openPath(anchor: anchor, components: components + [variant.rawValue])
+      let data = try directory.read("BuildManifest.plist", limit: 8 * 1024 * 1024)
+      guard (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)) != nil else {
+        throw IOSPhoneDDIError.integrity
+      }
+    }
+  }
+
+  /// Forget the import and go back to demanding the pinned mirror bytes.
+  func clearImported() {
+    imported = false
+    verified.removeAll()
+  }
+
   func prepare(_ variant: Variant,
                progress: @escaping @MainActor (Int64, Int64) -> Void) async throws {
     guard !busy else { throw IOSPhoneDDIError.unavailable }
+    // A bundle the user dropped into Documents/DSH-DDI wins over the network:
+    // the download is unreachable while LocalDevVPN is on.
+    if !imported, importFromDocumentsIfPresent() != nil {
+      // Report the bundle as complete so a progress UI does not stay spinning;
+      // nothing was transferred, so completed equals the pinned total.
+      let total = Self.assets(variant).reduce(Int64(0)) { $0 + $1.bytes }
+      progress(total, total)
+      return
+    }
     busy = true
     let preparation = UUID()
     progressID = preparation; progressCompleted = 0
@@ -216,7 +317,9 @@ private final class IOSPhoneDDIDirectory: @unchecked Sendable {
   deinit { close(descriptor) }
 
   static func openPath(anchor: URL, components: [String]) throws -> IOSPhoneDDIDirectory {
-    guard anchor.isFileURL, anchor.path.hasPrefix("/"), !components.isEmpty,
+    // An empty `components` opens the anchor itself; the import path uses that
+    // for a directory the user picked in Files.
+    guard anchor.isFileURL, anchor.path.hasPrefix("/"),
       components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && !$0.contains("/") && !$0.contains("\0") }) else {
       throw IOSPhoneDDIError.cache
     }
@@ -243,6 +346,103 @@ private final class IOSPhoneDDIDirectory: @unchecked Sendable {
     guard input >= 0 else { throw IOSPhoneDDIError.cache }
     defer { close(input) }
     return try IOSPhoneDDICache.verifyDescriptor(input, asset: asset)
+  }
+
+  // MARK: - Import support
+
+  func openChild(_ name: String) throws -> IOSPhoneDDIDirectory {
+    guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else {
+      throw IOSPhoneDDIError.cache
+    }
+    let child = openat(descriptor, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+    guard child >= 0 else { throw IOSPhoneDDIError.cache }
+    return IOSPhoneDDIDirectory(child)
+  }
+
+  func containsAll(_ names: [String]) -> Bool {
+    names.allSatisfy { name in
+      let fd = openat(descriptor, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+      guard fd >= 0 else { return false }
+      close(fd)
+      return true
+    }
+  }
+
+  func read(_ name: String, limit: Int) throws -> Data {
+    let fd = openat(descriptor, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+    guard fd >= 0 else { throw IOSPhoneDDIError.cache }
+    defer { close(fd) }
+    var info = stat()
+    guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+      info.st_size > 0, info.st_size <= Int64(limit) else { throw IOSPhoneDDIError.integrity }
+    var data = Data(capacity: Int(info.st_size))
+    var buffer = [UInt8](repeating: 0, count: 65_536)
+    var remaining = Int(info.st_size)
+    while remaining > 0 {
+      let want = min(remaining, buffer.count)
+      let count = buffer.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, want) }
+      if count == 0 { break }
+      if count < 0 { if errno == EINTR { continue }; throw IOSPhoneDDIError.cache }
+      data.append(contentsOf: buffer[0..<count])
+      remaining -= count
+    }
+    guard data.count == Int(info.st_size) else { throw IOSPhoneDDIError.integrity }
+    return data
+  }
+
+  /// Copy named regular files from this directory into `destination`, replacing
+  /// what is already there. Reads and writes both stay on no-follow descriptors,
+  /// so a symlink planted in either directory cannot redirect the copy.
+  func copy(all names: [String], into destination: IOSPhoneDDIDirectory) throws {
+    for name in names {
+      let input = openat(descriptor, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+      guard input >= 0 else { throw IOSPhoneDDIError.cache }
+      var info = stat()
+      guard fstat(input, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_size > 0 else {
+        close(input); throw IOSPhoneDDIError.integrity
+      }
+      let temporary = ".import-" + UUID().uuidString
+      let output: Int32
+      do { output = try destination.create(temporary) }
+      catch { close(input); throw error }
+
+      var inputClosed = false
+      var outputClosed = false
+      do {
+        var buffer = [UInt8](repeating: 0, count: 65_536)
+        var written: Int64 = 0
+        while true {
+          let count = buffer.withUnsafeMutableBytes { raw in
+            Darwin.read(input, raw.baseAddress, raw.count)
+          }
+          if count == 0 { break }
+          if count < 0 {
+            if errno == EINTR { continue }
+            throw IOSPhoneDDIError.cache
+          }
+          try buffer.withUnsafeBytes { raw in
+            var offset = 0
+            while offset < count {
+              let wrote = Darwin.write(output, raw.baseAddress!.advanced(by: offset), count - offset)
+              if wrote < 0 { if errno == EINTR { continue }; throw IOSPhoneDDIError.cache }
+              offset += wrote
+            }
+          }
+          written += Int64(count)
+        }
+        // Close the source before publishing so a long read never overlaps the
+        // rename. Each descriptor is closed exactly once on every path.
+        close(input); inputClosed = true
+        guard written == info.st_size, fsync(output) == 0 else { throw IOSPhoneDDIError.integrity }
+        close(output); outputClosed = true
+        try destination.publish(temporary, as: name)
+      } catch {
+        if !inputClosed { close(input) }
+        if !outputClosed { close(output) }
+        destination.remove(temporary)
+        throw error
+      }
+    }
   }
 
   func create(_ temporary: String) throws -> Int32 {
