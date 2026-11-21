@@ -1,0 +1,126 @@
+# A fast unsigned IPA for device installs, without the simulator battery.
+#
+# ios-compile.yml runs the whole engine contract (simulator rounds, guest tools,
+# a real app launch, the pet renderer capture) and takes about 70 minutes; the IPA
+# itself only needs the two xcodebuild calls in ios-compile's `compile` job.
+# This workflow is the same packaging with the test battery left out, so a change
+# to a Runner/*.swift or lib/**/*.dart file can be tried on the phone in under 30
+# minutes. It is not a replacement for ios-compile: nothing here proves the engine
+# still runs, so main keeps its full run.
+name: iOS quick IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['ios-quick-ipa']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-quick-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      FLUTTER_VERSION: 3.47.7
+      FLUTTER_SHA256: dd9da574c3168460550117eb0e8dd0313ae934fabf64a82a6d557fff5fd1422e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Show the toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+
+      # The Flutter archive is 1 GB and its download was ~2.5 minutes of every run.
+      - name: Restore the Flutter SDK
+        id: flutter-sdk
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/flutter-sdk
+          key: flutter-macos-arm64-${{ env.FLUTTER_VERSION }}-${{ env.FLUTTER_SHA256 }}
+
+      - name: Install Flutter
+        run: |
+          if [ "${{ steps.flutter-sdk.outputs.cache-hit }}" = "true" ]; then
+            echo "Flutter SDK restored from cache"
+          else
+            archive="flutter_macos_arm64_${FLUTTER_VERSION}-stable.zip"
+            curl -fsSL -o "$RUNNER_TEMP/$archive" \
+              "https://storage.googleapis.com/flutter_infra_release/releases/stable/macos/$archive"
+            echo "$FLUTTER_SHA256  $RUNNER_TEMP/$archive" | shasum -a 256 -c -
+            rm -rf "$RUNNER_TEMP/flutter-sdk"
+            mkdir -p "$RUNNER_TEMP/flutter-sdk"
+            unzip -q "$RUNNER_TEMP/$archive" -d "$RUNNER_TEMP/flutter-sdk"
+          fi
+          echo "$RUNNER_TEMP/flutter-sdk/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Save the Flutter SDK
+        if: steps.flutter-sdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/flutter-sdk
+          key: ${{ steps.flutter-sdk.outputs.cache-primary-key }}
+
+      # Xcode and pub artifacts from the previous package of this branch. The key
+      # pins the lockfile, so a dependency change rebuilds; a source change only
+      # recompiles what it touched.
+      - name: Restore build products
+        id: build-products
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            app/build
+            app/ios/build
+            ~/.pub-cache
+            ~/Library/Caches/org.swift.swiftpm
+          key: ios-quick-${{ runner.os }}-${{ hashFiles('app/pubspec.lock', 'app/ios/Podfile.lock') }}-${{ github.ref_name }}
+          restore-keys: |
+            ios-quick-${{ runner.os }}-${{ hashFiles('app/pubspec.lock', 'app/ios/Podfile.lock') }}-
+
+      - name: Resolve dependencies
+        run: |
+          flutter --version
+          python3 app/tool/l10n_merge.py --no-gen
+          cd app
+          flutter pub get --enforce-lockfile
+          flutter gen-l10n
+
+      - name: Compile for a device, unsigned
+        working-directory: app
+        run: bash ../tooling/ios/build.sh --release --no-codesign
+
+      - name: Save build products
+        if: steps.build-products.outputs.cache-hit != 'true' && !cancelled()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            app/build
+            app/ios/build
+            ~/.pub-cache
+            ~/Library/Caches/org.swift.swiftpm
+          key: ${{ steps.build-products.outputs.cache-primary-key }}
+
+      - name: Archive as for TestFlight, and look inside
+        run: bash tooling/ios/check-archive.sh
+
+      - name: Keep the unsigned app
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-unsigned-ipa
+          path: ${{ runner.temp }}/DSH-Go-unsigned.ipa
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Say how a crashed process died
+        if: ${{ failure() }}
+        run: python3 tooling/ios/engine-smoke/crash-notes.py 120 || true

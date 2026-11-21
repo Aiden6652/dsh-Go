@@ -112,6 +112,14 @@ final class IOSPhoneDDICache {
         })
       }
     }
+    // The exact JSON handed to Rust, so a rejection can be traced to the payload
+    // rather than guessed at. One line per mount attempt.
+    if imported || !result.keys.contains(where: { $0 != "catalogId" && $0 != "directory" }) {
+      if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]),
+         let text = String(data: data, encoding: .utf8) {
+        record("config: \(text)")
+      }
+    }
     return result
   }
 
