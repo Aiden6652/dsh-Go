@@ -41,6 +41,7 @@ final class PhoneLinkStatus {
     this.lastCheckCode,
     this.ddiVerified = false,
     this.ddiDownloading = false,
+    this.ddiImport = '',
     this.operationPending = false,
     this.downloaded = 0,
     this.downloadTotal = 0,
@@ -87,6 +88,10 @@ final class PhoneLinkStatus {
   /// A downloaded disk image passed its hash check in this run. Not that it is mounted.
   final bool ddiVerified;
   final bool ddiDownloading;
+
+  /// Outcome of the last import from Documents/DDI: `OK`, `ERR_PHONE_DDI_...`,
+  /// or a `skip:`/`fail:` detail. Empty before any attempt.
+  final String ddiImport;
 
   /// A setup step is under way: further taps wait, cancel stays.
   final bool operationPending;
@@ -135,6 +140,7 @@ final class PhoneLinkStatus {
       lastCheckCode: lastConnection['code'] as String?,
       ddiVerified: cache['verifiedThisProcess'] == true,
       ddiDownloading: cache['downloading'] == true,
+      ddiImport: cache['lastImport'] as String? ?? '',
       operationPending: map['operationPending'] == true,
       downloaded: (progress['completedBytes'] as num?)?.toInt() ?? 0,
       downloadTotal: (progress['totalBytes'] as num?)?.toInt() ?? 0,
@@ -168,6 +174,7 @@ abstract interface class PhoneLinkApi {
   Future<PhoneLinkResult> setXCTestEnabled(bool enabled);
   Future<PhoneLinkResult> checkConnection();
   Future<PhoneLinkResult> mountDDI();
+  Future<PhoneLinkResult> importDDI();
   Future<PhoneLinkResult> cancelPreparation();
   Future<PhoneLinkResult> restoreClipboard({bool overwriteChanged = false});
   Future<PhoneLinkResult> discardSavedClipboard();
@@ -215,6 +222,8 @@ final class PhoneLinkChannel implements PhoneLinkApi {
   Future<PhoneLinkResult> checkConnection() => _call('checkConnection');
   @override
   Future<PhoneLinkResult> mountDDI() => _call('mountDDI');
+  @override
+  Future<PhoneLinkResult> importDDI() => _call('importDDI');
   @override
   Future<PhoneLinkResult> cancelPreparation() => _call('cancelPreparation');
   @override

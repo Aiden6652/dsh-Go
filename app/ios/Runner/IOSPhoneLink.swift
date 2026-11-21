@@ -184,6 +184,17 @@ final class IOSPhoneLink: NSObject, FlutterStreamHandler, @preconcurrency UIDocu
           return self.answer(true)
         } catch { return self.answer(false, code: self.safeCode(error)) }
       }
+    case "importDDI":
+      // Settings · 开发者镜像 · 从 Documents/DDI 导入. Runs the same import the
+      // mount path tries first, but reports the outcome instead of swallowing it.
+      begin(reply) { [weak self] id in
+        guard let self else { return ["ok": false, "code": "ERR_PHONE_CANCELLED"] }
+        guard self.current(id), self.foreground else { return self.answer(false, code: "ERR_PHONE_CANCELLED") }
+        _ = self.cache.importFromDocumentsIfPresent()
+        let code = self.cache.lastImport
+        let ok = code == "OK"
+        return self.answer(ok, code: ok ? "OK" : code)
+      }
     case "checkConnection", "mountDDI":
       let mount = call.method == "mountDDI"
       begin(reply) { [weak self] id in
@@ -192,6 +203,10 @@ final class IOSPhoneLink: NSObject, FlutterStreamHandler, @preconcurrency UIDocu
         guard self.enabled, self.pairing.hasRecord, !self.legacyPresent else { return self.answer(false, code: "ERR_PHONE_LINK_DISABLED") }
         guard !IOSPhoneControl.shared.hasActivePhoneTask else { return self.answer(false, code: "ERR_PHONE_BUSY") }
         if mount {
+          // A bundle the user dropped into Documents/DDI is used before the
+          // network is touched: the download cannot reach the mirror while
+          // LocalDevVPN is up. The outcome is recorded in DDI-import.log.
+          _ = self.cache.importFromDocumentsIfPresent()
           let allowed = await self.ask(title: "准备本机开发者镜像？",
             message: "需要时会下载约 17 MB 的固定校验镜像，并向 Apple 请求本机个性化，再挂载到这台手机。镜像来自 DeveloperDiskImage 镜像仓库；不会卸载或替换其他正在使用的镜像。",
             choices: [("mount", "下载并挂载"), ("cancel", "取消")])

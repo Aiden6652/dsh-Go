@@ -199,6 +199,30 @@ class PhoneLinkSection extends ConsumerWidget {
                     onPressed: canCheck ? () => run(PhoneLinkStep.mount) : null,
                   ),
           ),
+        // Import instead of downloading: put the image in Documents/DDI, then
+        // tap here. Reporting the raw code is deliberate — the log in
+        // Documents/DDI-import.log carries the same text plus the failing step.
+        if (status.enabled && paired && !mounted)
+          ListPageRow(
+            icon: AppIcons.download,
+            title: '从 Documents/DDI 导入',
+            subtitle: status.ddiImport.isEmpty
+                ? '把镜像文件放进「文件」App → DSH Go → DDI，再点这里。不走网络。'
+                : '上次结果：${status.ddiImport}',
+            subtitleMaxLines: 3,
+            trailing: FixButton(
+              label: '导入',
+              onPressed: busy
+                  ? null
+                  : () async {
+                      final result = await PhoneLinkChannel().importDDI();
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text(result.ok ? '已导入 DDI' : '导入失败：${result.code}')),
+                      );
+                    },
+            ),
+          ),
         if (faulted)
           ListPageRow(
             icon: AppIcons.warning,
