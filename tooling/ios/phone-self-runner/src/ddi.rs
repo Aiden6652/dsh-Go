@@ -19,6 +19,9 @@ use sha2::{Digest, Sha256, Sha384};
 use crate::{DDI, Failure, Tunnel};
 
 pub(crate) const CATALOG_ID: &str = "ddi-e2aaeac89ca8fa56c2fa1f144d182994e07a525b-v1";
+/// The catalog id an imported DDI reports. It carries no pins, so the native
+/// side cannot confuse it with the mirror catalog.
+pub(crate) const IMPORTED_CATALOG_ID: &str = "ddi-imported-v1";
 const INTEGRITY: Failure = Failure("ERR_PHONE_DDI_INTEGRITY");
 const UNSUPPORTED: Failure = Failure("ERR_PHONE_DDI_UNSUPPORTED_DEVICE");
 const PERSONALIZATION: Failure = Failure("ERR_PHONE_DDI_PERSONALIZATION");
@@ -32,6 +35,14 @@ const CRYPTEX_SERVICE: &str = "com.apple.security.cryptexd.remote";
 pub(crate) struct DdiCache {
     pub(crate) catalog_id: String,
     pub(crate) directory: String,
+    /// The user imported this DDI from their own storage instead of the pinned
+    /// mirror (settings · phone · import DDI). Imported bytes are accepted on
+    /// structural grounds only: the files must exist, parse as a manifest, and
+    /// carry the expected names. The pinned length and SHA-256 pins cannot apply
+    /// because the bytes come from whatever build the user exported from their
+    /// own toolchain. Only `valid()` and `load()` consult this flag.
+    #[serde(default)]
+    pub(crate) imported: bool,
     pub(crate) personalized: Option<PersonalizedHashes>,
     pub(crate) cryptex: Option<CryptexHashes>,
 }
@@ -79,8 +90,17 @@ impl Progress {
 
 impl DdiCache {
     pub(crate) fn valid(&self) -> bool {
-        self.catalog_id == CATALOG_ID && Path::new(&self.directory).is_absolute()
-            && self.directory.len() <= 4096 && !self.directory.contains('\0')
+        if self.catalog_id.is_empty() || Path::new(&self.directory).is_absolute() == false
+            || self.directory.len() > 4096 || self.directory.contains('\0')
+        {
+            return false;
+        }
+        // An imported cache carries no pinned hashes: any tuple of strings is
+        // accepted here and `load()` decides from the files themselves.
+        if self.imported {
+            return self.catalog_id == IMPORTED_CATALOG_ID;
+        }
+        self.catalog_id == CATALOG_ID
             && self.personalized.as_ref().is_none_or(|pins| {
                 pins.manifest == expected(Variant::Personalized, "BuildManifest.plist")
                     && pins.image == expected(Variant::Personalized, "Image.dmg")
@@ -172,7 +192,17 @@ fn load(cache: Option<&DdiCache>, variant: Variant) -> Result<Assets, Failure> {
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&cache.directory).map_err(|_| variant.missing())?;
     let directory = open_at(&root, variant.name(), true)?;
-    let read = |name: &str| read_checked(&directory, name, expected_bytes(variant, name), expected(variant, name));
+    // An imported cache has no pins, so every file is read structurally: it
+    // must be an openable regular file with a sane size, and the manifest must
+    // parse. The one invariant kept from the pinned path is the manifest's
+    // BuildIdentities, which the TSS query below needs to select against.
+    let read = |name: &str| {
+        if cache.imported {
+            read_imported(&directory, name, imported_max_bytes(name))
+        } else {
+            read_checked(&directory, name, expected_bytes(variant, name), expected(variant, name))
+        }
+    };
     let manifest = read("BuildManifest.plist")?;
     let manifest = plist::from_bytes(&manifest).map_err(|_| INTEGRITY)?;
     let image = read("Image.dmg")?;
@@ -181,6 +211,34 @@ fn load(cache: Option<&DdiCache>, variant: Variant) -> Result<Assets, Failure> {
         (read("Image.dmg.cryptex_info")?, read("Image.dmg.root_hash")?)
     } else { (Vec::new(), Vec::new()) };
     Ok(Assets { manifest, image, trust_cache, info, root_hash })
+}
+
+/// Upper bounds for imported files. Only a manifest needs to be parsed in full;
+/// the largest real DDI image is far below 64 MiB, and refusing anything bigger
+/// keeps a runaway file from being held in memory.
+fn imported_max_bytes(name: &str) -> usize {
+    match name {
+        "BuildManifest.plist" => 8 * 1024 * 1024,
+        "Image.dmg" => 64 * 1024 * 1024,
+        "Image.dmg.trustcache" => 1024 * 1024,
+        "Image.dmg.cryptex_info" => 64 * 1024,
+        "Image.dmg.root_hash" => 1024,
+        _ => 0,
+    }
+}
+
+fn read_imported(directory: &File, name: &str, max_len: usize) -> Result<Vec<u8>, Failure> {
+    if max_len == 0 { return Err(INTEGRITY); }
+    let file = open_at(directory, name, false)?;
+    let metadata = file.metadata().map_err(|_| INTEGRITY)?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > max_len as u64 {
+        return Err(INTEGRITY);
+    }
+    let len = metadata.len() as usize;
+    let mut bytes = Vec::with_capacity(len);
+    file.take((len + 1) as u64).read_to_end(&mut bytes).map_err(|_| INTEGRITY)?;
+    if bytes.len() != len { return Err(INTEGRITY); }
+    Ok(bytes)
 }
 
 fn major_version(value: &str) -> Option<u32> {
@@ -358,7 +416,7 @@ mod tests {
     #[ignore = "requires the exact verified catalog fixture, never mounts or contacts a device"]
     fn real_pinned_catalog_files_pass_independent_native_validation() {
         let directory = std::env::var("DSH_TEST_DDI_CACHE").expect("set DSH_TEST_DDI_CACHE to the fixed-layout fixture");
-        let cache = DdiCache { catalog_id: CATALOG_ID.into(), directory,
+        let cache = DdiCache { catalog_id: CATALOG_ID.into(), directory, imported: false,
             personalized: Some(PersonalizedHashes {
                 manifest: expected(Variant::Personalized,"BuildManifest.plist").into(),
                 image: expected(Variant::Personalized,"Image.dmg").into(),
@@ -378,5 +436,37 @@ mod tests {
         assert_eq!(cryptex.trust_cache.len(), 1895);
         assert_eq!(cryptex.info.len(), 430); assert_eq!(cryptex.root_hash.len(), 229);
         assert!(idevice::tss::select_cryptex_build_identity(&cryptex.manifest).is_ok());
+    }
+
+    #[test]
+    fn imported_catalog_accepts_unpinned_files() {
+        let cache: DdiCache = serde_json::from_value(serde_json::json!({
+            "catalogId": IMPORTED_CATALOG_ID,
+            "directory": "/private/cache",
+            "imported": true,
+            "personalized": {"manifest":"a","image":"b","trustCache":"c"}
+        })).unwrap();
+        assert!(cache.valid());
+    }
+
+    #[test]
+    fn imported_flag_cannot_claim_the_pinned_catalog() {
+        let cache: DdiCache = serde_json::from_value(serde_json::json!({
+            "catalogId": CATALOG_ID,
+            "directory": "/private/cache",
+            "imported": true,
+            "personalized": {"manifest":"a","image":"b","trustCache":"c"}
+        })).unwrap();
+        assert!(!cache.valid());
+    }
+
+    #[test]
+    fn a_pinned_catalog_without_the_flag_still_needs_the_exact_hashes() {
+        let cache: DdiCache = serde_json::from_value(serde_json::json!({
+            "catalogId": CATALOG_ID,
+            "directory": "/private/cache",
+            "personalized": {"manifest":"a","image":"b","trustCache":"c"}
+        })).unwrap();
+        assert!(!cache.valid());
     }
 }
