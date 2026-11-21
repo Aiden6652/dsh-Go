@@ -38,6 +38,10 @@ final class IOSPhoneDDICache {
   /// the pinned one, so the native side stops demanding the mirror's hashes.
   private(set) var imported = false
 
+  /// Outcome of the most recent import attempt: `OK`, `ERR_PHONE_DDI_...`, or a
+  /// `skip:`/`fail:` detail. Shown in settings and in `Documents/DDI-import.log`.
+  private(set) var lastImport = ""
+
   init(root: URL? = nil) {
     // Resolve only the trusted container prefix. Never resolve a cache-owned
     // symlink into authority to write elsewhere. Library/Caches is not backed up.
@@ -88,7 +92,7 @@ final class IOSPhoneDDICache {
 
   func status() -> [String: Any] {
     ["catalogId": imported ? Self.importedCatalogID : Self.catalogID,
-     "downloading": busy, "imported": imported,
+     "downloading": busy, "imported": imported, "lastImport": lastImport,
      "verifiedThisProcess": verified.map(\.rawValue).sorted()]
   }
 
@@ -129,13 +133,43 @@ final class IOSPhoneDDICache {
     let documents = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
       .appendingPathComponent("Documents", isDirectory: true)
       .appendingPathComponent(Self.importFolderName, isDirectory: true)
-    guard FileManager.default.fileExists(atPath: documents.path) else { return nil }
+    guard FileManager.default.fileExists(atPath: documents.path) else {
+      record("skip: no \(Self.importFolderName) folder at \(documents.path)")
+      lastImport = "ERR_PHONE_DDI_IMPORT_MISSING"
+      return nil
+    }
+    record("begin: \(documents.path)")
     do {
-      return try importDirectory(documents)
+      let status = try importDirectory(documents)
+      record("ok: \(status)")
+      lastImport = "OK"
+      return status
     } catch {
       // A half-copied folder must not brick the download path; leave `imported`
-      // false and let the caller try the network.
+      // false and let the caller try the network. The reason still goes to the
+      // report so a failed import can be diagnosed from Documents alone.
+      let reason = (error as? IOSPhoneDDIError)?.rawValue ?? "\(error)"
+      record("fail: \(reason)")
+      lastImport = reason
       return nil
+    }
+  }
+
+  /// Append one line to `Documents/DDI-import.log`. The file lives where the
+  /// user can read it from Files and where the harness can read it back, which
+  /// is the only log channel available without a Mac attached.
+  private func record(_ line: String) {
+    let url = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+      .appendingPathComponent("Documents", isDirectory: true)
+      .appendingPathComponent("DDI-import.log", isDirectory: false)
+    let stamp = ISO8601DateFormatter().string(from: Date())
+    guard let data = ("[\(stamp)] " + line + "\n").data(using: .utf8) else { return }
+    if let handle = try? FileHandle(forWritingTo: url) {
+      defer { try? handle.close() }
+      _ = try? handle.seekToEnd()
+      try? handle.write(contentsOf: data)
+    } else {
+      try? data.write(to: url, options: .atomic)
     }
   }
 
