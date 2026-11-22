@@ -166,6 +166,14 @@ final class IOSPhoneDDICache {
   /// Append one line to `Documents/DDI-import.log`. The file lives where the
   /// user can read it from Files and where the harness can read it back, which
   /// is the only log channel available without a Mac attached.
+  /// Record that the native side rejected the imported bundle. Called from the
+  /// mount path so the reason survives into the log even though the failure
+  /// travels to the UI as a code.
+  func noteImportFailure(_ code: String) {
+    record("native rejected imported bundle: \(code)")
+    lastImport = code
+  }
+
   private func record(_ line: String) {
     let url = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
       .appendingPathComponent("Documents", isDirectory: true)

@@ -23,6 +23,13 @@ pub(crate) const CATALOG_ID: &str = "ddi-e2aaeac89ca8fa56c2fa1f144d182994e07a525
 /// side cannot confuse it with the mirror catalog.
 pub(crate) const IMPORTED_CATALOG_ID: &str = "ddi-imported-v1";
 const INTEGRITY: Failure = Failure("ERR_PHONE_DDI_INTEGRITY");
+/// The bridge config carried no cache at all. Distinct from INTEGRITY because
+/// the host falls back to a download on this one only.
+const CACHE_ABSENT: Failure = Failure("ERR_PHONE_DDI_CACHE_ABSENT");
+/// The cache exists but its catalog id or directory failed `valid()`.
+const CACHE_INVALID: Failure = Failure("ERR_PHONE_DDI_CACHE_INVALID");
+/// An imported file was missing, empty, or larger than its bound.
+const CACHE_FILE: Failure = Failure("ERR_PHONE_DDI_IMPORT_FILE");
 const UNSUPPORTED: Failure = Failure("ERR_PHONE_DDI_UNSUPPORTED_DEVICE");
 const PERSONALIZATION: Failure = Failure("ERR_PHONE_DDI_PERSONALIZATION");
 const MOUNT: Failure = Failure("ERR_PHONE_DDI_MOUNT");
@@ -181,8 +188,18 @@ struct Assets {
     root_hash: Vec<u8>,
 }
 fn load(cache: Option<&DdiCache>, variant: Variant) -> Result<Assets, Failure> {
-    let cache = cache.ok_or_else(|| variant.missing())?;
-    if !cache.valid() { return Err(INTEGRITY); }
+    let cache = match cache {
+        Some(cache) => cache,
+        None => {
+            eprintln!("[dsh-ddi] load: no ddiCache in bridge config (variant={})", variant.name());
+            return Err(CACHE_ABSENT);
+        }
+    };
+    if !cache.valid() {
+        eprintln!("[dsh-ddi] load: cache invalid catalog={} imported={} dir={}",
+            cache.catalog_id, cache.imported, cache.directory);
+        return Err(CACHE_INVALID);
+    }
     match variant {
         Variant::Personalized if cache.personalized.is_none() => return Err(variant.missing()),
         Variant::Cryptex if cache.cryptex.is_none() => return Err(variant.missing()),
@@ -228,16 +245,39 @@ fn imported_max_bytes(name: &str) -> usize {
 }
 
 fn read_imported(directory: &File, name: &str, max_len: usize) -> Result<Vec<u8>, Failure> {
-    if max_len == 0 { return Err(INTEGRITY); }
-    let file = open_at(directory, name, false)?;
-    let metadata = file.metadata().map_err(|_| INTEGRITY)?;
+    if max_len == 0 {
+        eprintln!("[dsh-ddi] read_imported: unknown file {name}");
+        return Err(CACHE_FILE);
+    }
+    let file = match open_at(directory, name, false) {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!("[dsh-ddi] read_imported: cannot open {name}: {}", error.0);
+            return Err(CACHE_FILE);
+        }
+    };
+    let metadata = match file.metadata() {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            eprintln!("[dsh-ddi] read_imported: stat {name}: {error}");
+            return Err(CACHE_FILE);
+        }
+    };
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > max_len as u64 {
-        return Err(INTEGRITY);
+        eprintln!("[dsh-ddi] read_imported: {name} size={} max={max_len} is_file={}",
+            metadata.len(), metadata.is_file());
+        return Err(CACHE_FILE);
     }
     let len = metadata.len() as usize;
     let mut bytes = Vec::with_capacity(len);
-    file.take((len + 1) as u64).read_to_end(&mut bytes).map_err(|_| INTEGRITY)?;
-    if bytes.len() != len { return Err(INTEGRITY); }
+    if let Err(error) = file.take((len + 1) as u64).read_to_end(&mut bytes) {
+        eprintln!("[dsh-ddi] read_imported: read {name}: {error}");
+        return Err(CACHE_FILE);
+    }
+    if bytes.len() != len {
+        eprintln!("[dsh-ddi] read_imported: {name} short read {} of {len}", bytes.len());
+        return Err(CACHE_FILE);
+    }
     Ok(bytes)
 }
 

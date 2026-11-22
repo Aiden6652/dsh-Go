@@ -118,6 +118,12 @@ impl Config {
         if uuid::Uuid::parse_str(&wire.run_id).is_err() || wire.run_id.contains('\0')
             || !(host.is_loopback() || wire.host == "10.7.0.1") || wire.port == 0
             || wire.ddi_cache.as_ref().is_some_and(|cache| !cache.valid()) {
+            let reason = if uuid::Uuid::parse_str(&wire.run_id).is_err() { "run_id" }
+                else if wire.run_id.contains('\0') { "run_id_nul" }
+                else if !(host.is_loopback() || wire.host == "10.7.0.1") { "host" }
+                else if wire.port == 0 { "port" }
+                else { "ddi_cache" };
+            eprintln!("[dsh-phone-core] rejected bridge config: {reason}");
             return None;
         }
         Some(Self { run_id: wire.run_id,
