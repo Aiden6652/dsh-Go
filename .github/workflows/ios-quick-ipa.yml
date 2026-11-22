@@ -93,6 +93,91 @@ jobs:
           flutter pub get --enforce-lockfile
           flutter gen-l10n
 
+      # The IPA embeds the Node engine and the iSH guest, and check-archive.sh
+      # refuses a bundle missing either. These four steps are the same ones
+      # ios-compile's engine job runs before its simulator tests; skipping the
+      # tests is the only thing this workflow leaves out.
+      - name: Prepare the engine
+        id: prepare
+        run: |
+          python3 --version
+          log="$(mktemp)"
+          if ! bash tooling/ios/prepare-engine.sh 2>&1 | tee "$log"; then
+            tail -n 8 "$log" | cut -c1-600 | sed -e 's/%/%25/g' -e 's/^/::error title=prepare-engine::/'
+            exit 1
+          fi
+          ls -la app/ios/Engine
+
+      - name: Install the iSH build tools
+        run: |
+          brew install llvm lld
+          python3 -m venv "$RUNNER_TEMP/ish-tools"
+          "$RUNNER_TEMP/ish-tools/bin/pip" install meson==1.7.2 ninja==1.11.1.4
+          echo "$RUNNER_TEMP/ish-tools/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
+          PATH="$(brew --prefix lld)/bin:$PATH" ld.lld --version
+
+      - name: Identify the pinned iSH build inputs
+        id: ish-inputs
+        run: |
+          device="$(bash tooling/ios/build-ish.sh --cache-key iphoneos)"
+          simulator="$(bash tooling/ios/build-ish.sh --cache-key iphonesimulator)"
+          key="$(printf '%s\n%s\n' "$device" "$simulator" | shasum -a 256 | cut -d' ' -f1)"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the iSH frameworks and fixed source archive
+        id: ish-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            app/ios/Engine/ish-cache
+            app/ios/Engine/build/iphoneos/guest
+            app/ios/Engine/build/iphonesimulator/guest
+          key: ${{ runner.os }}-ish-${{ steps.ish-inputs.outputs.key }}
+
+      - name: Compile iSH and its N-API owner for the simulator and device
+        if: steps.ish-cache.outputs.cache-hit != 'true'
+        run: |
+          for sdk in iphonesimulator iphoneos; do
+            out="app/ios/Engine/build/$sdk/guest"
+            log="$RUNNER_TEMP/ish-$sdk.log"
+            if ! bash tooling/ios/build-guest-addon.sh "$sdk" "$out" 2>&1 | tee "$log"; then
+              tail -n 12 "$log" | cut -c1-600 | sed -e 's/%/%25/g' -e 's/^/::error title=iSH build::/'
+              exit 1
+            fi
+            for name in DshGuest DshGuestBridge; do
+              binary="$out/$name.framework/$name"
+              file "$binary"
+              xcrun lipo "$binary" -verify_arch arm64
+              install_name="$(xcrun otool -D "$binary" | tail -n 1)"
+              test "$install_name" = "@rpath/$name.framework/$name"
+            done
+          done
+
+      - name: Save the compiled iSH cache
+        if: steps.ish-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            app/ios/Engine/ish-cache
+            app/ios/Engine/build/iphoneos/guest
+            app/ios/Engine/build/iphonesimulator/guest
+          key: ${{ steps.ish-cache.outputs.cache-primary-key }}
+
+      - name: Compile the native pieces for a device
+        run: |
+          log="$(mktemp)"
+          if ! bash tooling/ios/build-engine-native.sh iphoneos "$RUNNER_TEMP/device" 2>&1 | tee "$log"; then
+            grep -E 'error:|Undefined|ld:' "$log" | awk '!seen[$0]++' | head -10 | cut -c1-600 \
+              | sed -e 's/%/%25/g' -e 's/^/::error title=native-device::/'
+            exit 1
+          fi
+          for name in DshFlock DshRequireBuiltin; do
+            test -f "$RUNNER_TEMP/device/$name.framework/$name"
+            test -f "$RUNNER_TEMP/device/$name.framework/Info.plist"
+          done
+
       - name: Compile for a device, unsigned
         working-directory: app
         run: bash ../tooling/ios/build.sh --release --no-codesign
