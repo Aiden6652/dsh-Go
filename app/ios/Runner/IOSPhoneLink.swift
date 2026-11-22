@@ -214,6 +214,15 @@ final class IOSPhoneLink: NSObject, FlutterStreamHandler, @preconcurrency UIDocu
         }
         let live = { [weak self] in self?.current(id) == true && self?.enabled == true }
         var checked = await self.core.prepare(ownerID: coreOwner, allowDDIMount: mount, current: live)
+        // Every outcome of a mount attempt is written down. The log is the only
+        // channel that survives without a Mac, and a mount that failed somewhere
+        // other than the DDI cache would otherwise leave no trace at all.
+        if mount {
+          switch checked {
+          case .success: self.cache.noteImportOutcome("mount ok")
+          case .failure(let failure): self.cache.noteImportOutcome("mount failed: \(failure.code)")
+          }
+        }
         // An imported bundle that the native side rejected must not silently turn
         // into a download: the download cannot work here and the user would see
         // only a spinner. These codes say which check failed instead.
@@ -225,6 +234,7 @@ final class IOSPhoneLink: NSObject, FlutterStreamHandler, @preconcurrency UIDocu
         }
         if mount, case .failure(let failure) = checked, failure.code == "ERR_PHONE_DDI_CACHE_REQUIRED",
           let name = failure.variant, let variant = IOSPhoneDDICache.Variant(rawValue: name), live() {
+          self.cache.noteImportOutcome("falling back to download, variant=\(name)")
           do {
             try await self.cache.prepare(variant) { [weak self] done, total in
               guard let self, self.current(id) else { return }
@@ -233,6 +243,10 @@ final class IOSPhoneLink: NSObject, FlutterStreamHandler, @preconcurrency UIDocu
             }
             guard live() else { return self.answer(false, code: "ERR_PHONE_CANCELLED") }
             checked = await self.core.prepare(ownerID: coreOwner, allowDDIMount: true, current: live)
+            switch checked {
+            case .success: self.cache.noteImportOutcome("mount after download ok")
+            case .failure(let failure): self.cache.noteImportOutcome("mount after download failed: \(failure.code)")
+            }
           } catch { self.core.stop(ownerID: coreOwner); return self.answer(false, code: self.safeCode(error)) }
         }
         guard live() else { self.core.stop(ownerID: coreOwner); return self.answer(false, code: "ERR_PHONE_CANCELLED") }

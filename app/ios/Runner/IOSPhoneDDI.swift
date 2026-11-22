@@ -174,6 +174,12 @@ final class IOSPhoneDDICache {
     lastImport = code
   }
 
+  /// Append one line describing how a mount attempt ended. Not an import status:
+  /// the point is to see the mount's own outcome next to the import that fed it.
+  func noteImportOutcome(_ line: String) {
+    record(line)
+  }
+
   private func record(_ line: String) {
     let url = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
       .appendingPathComponent("Documents", isDirectory: true)
