@@ -214,6 +214,15 @@ final class IOSPhoneLink: NSObject, FlutterStreamHandler, @preconcurrency UIDocu
         }
         let live = { [weak self] in self?.current(id) == true && self?.enabled == true }
         var checked = await self.core.prepare(ownerID: coreOwner, allowDDIMount: mount, current: live)
+        // An imported bundle that the native side rejected must not silently turn
+        // into a download: the download cannot work here and the user would see
+        // only a spinner. These codes say which check failed instead.
+        if mount, case .failure(let failure) = checked,
+           ["ERR_PHONE_DDI_CACHE_INVALID", "ERR_PHONE_DDI_IMPORT_FILE"].contains(failure.code) {
+          self.core.stop(ownerID: coreOwner)
+          self.cache.noteImportFailure(failure.code)
+          return self.answer(false, code: failure.code)
+        }
         if mount, case .failure(let failure) = checked, failure.code == "ERR_PHONE_DDI_CACHE_REQUIRED",
           let name = failure.variant, let variant = IOSPhoneDDICache.Variant(rawValue: name), live() {
           do {
