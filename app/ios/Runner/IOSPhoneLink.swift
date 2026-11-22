@@ -202,16 +202,10 @@ final class IOSPhoneLink: NSObject, FlutterStreamHandler, @preconcurrency UIDocu
         let coreOwner = "settings:" + id.uuidString
         guard self.enabled, self.pairing.hasRecord, !self.legacyPresent else { return self.answer(false, code: "ERR_PHONE_LINK_DISABLED") }
         guard !IOSPhoneControl.shared.hasActivePhoneTask else { return self.answer(false, code: "ERR_PHONE_BUSY") }
-        if mount {
-          // A bundle the user dropped into Documents/DDI is used before the
-          // network is touched: the download cannot reach the mirror while
-          // LocalDevVPN is up. The outcome is recorded in DDI-import.log.
-          _ = self.cache.importFromDocumentsIfPresent()
-          let allowed = await self.ask(title: "准备本机开发者镜像？",
-            message: "需要时会下载约 17 MB 的固定校验镜像，并向 Apple 请求本机个性化，再挂载到这台手机。镜像来自 DeveloperDiskImage 镜像仓库；不会卸载或替换其他正在使用的镜像。",
-            choices: [("mount", "下载并挂载"), ("cancel", "取消")])
-          guard allowed == "mount", self.current(id), self.foreground else { return self.answer(false, code: "ERR_PHONE_CANCELLED") }
-        }
+        // A bundle dropped into Documents/DDI is imported before anything else,
+        // so the mount below never needs the network. This is not a question for
+        // the user: it only moves files the user already put in place.
+        if mount { _ = self.cache.importFromDocumentsIfPresent() }
         let live = { [weak self] in self?.current(id) == true && self?.enabled == true }
         var checked = await self.core.prepare(ownerID: coreOwner, allowDDIMount: mount, current: live)
         // Every outcome of a mount attempt is written down. The log is the only
@@ -232,8 +226,31 @@ final class IOSPhoneLink: NSObject, FlutterStreamHandler, @preconcurrency UIDocu
           self.cache.noteImportFailure(failure.code)
           return self.answer(false, code: failure.code)
         }
+        // Only a genuinely missing cache reaches the network, and only then is
+        // there something to ask about: an imported bundle got this far without
+        // a dialog, which is why a working import used to end in silence here.
         if mount, case .failure(let failure) = checked, failure.code == "ERR_PHONE_DDI_CACHE_REQUIRED",
-          let name = failure.variant, let variant = IOSPhoneDDICache.Variant(rawValue: name), live() {
+          live() {
+          let allowed = await self.ask(title: "准备本机开发者镜像？",
+            message: "需要时会下载约 17 MB 的固定校验镜像，并向 Apple 请求本机个性化，再挂载到这台手机。镜像来自 DeveloperDiskImage 镜像仓库；不会卸载或替换其他正在使用的镜像。",
+            choices: [("mount", "下载并挂载"), ("cancel", "取消")])
+          // A dialog that cannot be shown is not the user refusing: say which, so
+          // the page does not look like the button did nothing.
+          guard let allowed else {
+            self.cache.noteImportOutcome("no dialog: not foreground or another sheet is up")
+            self.core.stop(ownerID: coreOwner)
+            return self.answer(false, code: "ERR_PHONE_DIALOG_UNAVAILABLE")
+          }
+          guard allowed == "mount", self.current(id), self.foreground else {
+            self.cache.noteImportOutcome("download declined")
+            self.core.stop(ownerID: coreOwner)
+            return self.answer(false, code: "ERR_PHONE_CANCELLED")
+          }
+          guard let name = failure.variant, let variant = IOSPhoneDDICache.Variant(rawValue: name), live() else {
+            self.cache.noteImportOutcome("no variant in \(failure.code)")
+            self.core.stop(ownerID: coreOwner)
+            return self.answer(false, code: failure.code)
+          }
           self.cache.noteImportOutcome("falling back to download, variant=\(name)")
           do {
             try await self.cache.prepare(variant) { [weak self] done, total in
