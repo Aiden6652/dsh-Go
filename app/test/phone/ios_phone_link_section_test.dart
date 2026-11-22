@@ -52,6 +52,8 @@ class _Link implements PhoneLinkApi {
   @override
   Future<PhoneLinkResult> mountDDI() => _step('mountDDI');
   @override
+  Future<PhoneLinkResult> importDDI() => _step('importDDI');
+  @override
   Future<PhoneLinkResult> cancelPreparation() => _step('cancelPreparation');
   @override
   Future<PhoneLinkResult> restoreClipboard({bool overwriteChanged = false}) =>
