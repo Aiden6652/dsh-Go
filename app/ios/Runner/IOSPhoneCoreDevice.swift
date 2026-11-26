@@ -214,6 +214,17 @@ final class IOSPhoneCoreDevice: NSObject {
           return .failure(.init(code: "ERR_PHONE_PREPARATION_TIMEOUT"))
         }
       } else if let run = active {
+        // A run whose stop timed out keeps its own event callback in case the
+        // native side confirms cleanup late, but it must not block the next
+        // attempt forever. Once the app is in the foreground again, the user is
+        // entitled to try again: retire the dead run and start a fresh one. The
+        // stale callback stays filtered out by its handle.
+        if run.faulted, run.terminal {
+          Self.resultCallbacks = Self.resultCallbacks.filter { !$0.key.hasPrefix("\(run.handle):") }
+          if active === run { active = nil }
+          observed = nil
+          continue
+        }
         if run.faulted { return .failure(.init(code: "ERR_PHONE_STOP_UNCONFIRMED")) }
         if run.terminal { active = nil; continue }
         if run.ownerID != ownerID || run.pairingGeneration != pairing.generation { stop(run) }
