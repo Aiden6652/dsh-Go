@@ -190,14 +190,9 @@ struct Assets {
 fn load(cache: Option<&DdiCache>, variant: Variant) -> Result<Assets, Failure> {
     let cache = match cache {
         Some(cache) => cache,
-        None => {
-            eprintln!("[dsh-ddi] load: no ddiCache in bridge config (variant={})", variant.name());
-            return Err(CACHE_ABSENT);
-        }
+        None => return Err(CACHE_ABSENT),
     };
     if !cache.valid() {
-        eprintln!("[dsh-ddi] load: cache invalid catalog={} imported={} dir={}",
-            cache.catalog_id, cache.imported, cache.directory);
         return Err(CACHE_INVALID);
     }
     match variant {
@@ -246,36 +241,17 @@ fn imported_max_bytes(name: &str) -> usize {
 
 fn read_imported(directory: &File, name: &str, max_len: usize) -> Result<Vec<u8>, Failure> {
     if max_len == 0 {
-        eprintln!("[dsh-ddi] read_imported: unknown file {name}");
         return Err(CACHE_FILE);
     }
-    let file = match open_at(directory, name, false) {
-        Ok(file) => file,
-        Err(error) => {
-            eprintln!("[dsh-ddi] read_imported: cannot open {name}: {}", error.0);
-            return Err(CACHE_FILE);
-        }
-    };
-    let metadata = match file.metadata() {
-        Ok(metadata) => metadata,
-        Err(error) => {
-            eprintln!("[dsh-ddi] read_imported: stat {name}: {error}");
-            return Err(CACHE_FILE);
-        }
-    };
+    let file = open_at(directory, name, false).map_err(|_| CACHE_FILE)?;
+    let metadata = file.metadata().map_err(|_| CACHE_FILE)?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > max_len as u64 {
-        eprintln!("[dsh-ddi] read_imported: {name} size={} max={max_len} is_file={}",
-            metadata.len(), metadata.is_file());
         return Err(CACHE_FILE);
     }
     let len = metadata.len() as usize;
     let mut bytes = Vec::with_capacity(len);
-    if let Err(error) = file.take((len + 1) as u64).read_to_end(&mut bytes) {
-        eprintln!("[dsh-ddi] read_imported: read {name}: {error}");
-        return Err(CACHE_FILE);
-    }
+    file.take((len + 1) as u64).read_to_end(&mut bytes).map_err(|_| CACHE_FILE)?;
     if bytes.len() != len {
-        eprintln!("[dsh-ddi] read_imported: {name} short read {} of {len}", bytes.len());
         return Err(CACHE_FILE);
     }
     Ok(bytes)
