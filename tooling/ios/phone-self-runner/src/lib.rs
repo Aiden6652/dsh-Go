@@ -143,18 +143,6 @@ impl Config {
             || key.n().bits() != 2048
             || value.ddi_cache.as_ref().is_some_and(|cache| !cache.valid())
         {
-            // The iPhone cannot attach a debugger, so the one place a rejected
-            // bridge config can explain itself is stderr: the host tees it into
-            // Documents/nebula_host.txt on its side and the app log on ours.
-            let reason = if uuid::Uuid::parse_str(&value.run_id).is_err() { "run_id" }
-                else if value.run_id.contains('\0') { "run_id_nul" }
-                else if !self_route { "host" }
-                else if value.port == 0 { "port" }
-                else if !bundle(&value.runner_bundle_id) { "runner_bundle_id" }
-                else if !bundle(&value.target_bundle_id) { "target_bundle_id" }
-                else if key.n().bits() != 2048 { "key_bits" }
-                else { "ddi_cache" };
-            eprintln!("[dsh-phone] rejected bridge config: {reason}");
             return None;
         }
         Some(Self {
